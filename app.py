@@ -69,8 +69,9 @@ search_tool = TavilySearch(max_results=3, search_depth="basic")
 @tool
 async def web_search(query: str):
     """
-    Search the web for real-time information or topics not found in the internal Docs.
-    Use this only when the user asks about current events or specific external data, or something you really don't know
+    Search the web for real-time information.
+    STRICT RULE: DO NOT use this tool for casual chat, greetings, or general knowledge.
+    ONLY use this when the user explicitly asks about current events or external data.
     """
     results = await search_tool.ainvoke(query)
 
@@ -105,7 +106,11 @@ async def web_search(query: str):
 
 @tool
 async def retrieve_docs(query: str):
-    """Fetch relevant information from the ingested knowledge base to answer user queries. Use this when the user asks about specific facts, people, or topics that you do not know."""
+    """
+    Fetch relevant information from the ingested knowledge base to answer user queries.
+    STRICT RULE: NEVER use this for simple greetings (e.g., 'hey', 'hello') or casual conversation.
+    ONLY use this tool when the user's query specifically requires factual information from the internal documents.
+    """
     docs = await retriever.ainvoke(query) if retriever else []
     joined_results = "\n".join(doc.page_content for doc in docs)
     return f"--- KNOWLEDGE BASE ---\n{joined_results}\n\n"
@@ -153,13 +158,14 @@ async def call_model_node(state: AgentState):
 
     # A. define the prompt template
     default_system = (
-        "You are an AI assistant. You have access to tools, but you must NOT use them unless absolutely necessary.\n"
-        "CRITICAL INSTRUCTIONS:\n"
-        "1. DO NOT use tools for creative writing (e.g., poems, stories, code), simple greetings, or general conversation. Answer these directly from your own knowledge.\n"
-        "2. Use retrieve_docs to query the knowledge base when asked about specific facts, people, or topics you do not know.\n"
-        "3. ONLY use web_search for specific questions about current events or external facts if retrieve_docs fails.\n"
-        "4. If you have already used a tool and got a result, synthesize the final answer immediately. DO NOT call the tool again for the same question.\n"
-        "5. Always provide concise and helpful answers."
+        "You are a strict, helpful AI assistant. You have access to tools, but you must ONLY use them when absolutely required to fulfill a factual query.\n"
+        "CRITICAL TOOL USE INSTRUCTIONS:\n"
+        "1. NEVER use tools for simple greetings (e.g., 'hey', 'hello'), casual conversation, or small talk. Respond directly.\n"
+        "2. NEVER use tools for creative writing (e.g., poems, stories, code) or general knowledge questions you can answer yourself.\n"
+        "3. ONLY use `retrieve_docs` if the user EXPLICITLY asks about a specific fact, document, or knowledge base item.\n"
+        "4. ONLY use `web_search` for current events or external facts that you don't know, AND if `retrieve_docs` did not help.\n"
+        "5. If you already used a tool, synthesize the final answer immediately. DO NOT call tools repeatedly for the same question.\n"
+        "6. If you are unsure if a tool is needed, DO NOT USE IT. Provide a direct answer."
     )
     
     if sys_prompt.strip():
@@ -377,7 +383,10 @@ async def delete_knowledge(id: int):
                     idx = pc.Index(INDEX_NAME)
                     idx.delete(filter={"source": src})
                 
-                await asyncio.to_thread(delete_from_pinecone, source)
+                try:
+                    await asyncio.to_thread(delete_from_pinecone, source)
+                except Exception as e:
+                    print(f"Warning: Failed to delete from Pinecone: {e}")
                 
                 # Delete from postgres
                 await cur.execute("DELETE FROM ingested_documents WHERE id = %s", (id,))
@@ -500,10 +509,13 @@ async def chat_endpoint(
             ):
                 if mode == "messages":
                     chunk, metadata = data
-                    if chunk.content and not getattr(chunk, "tool_calls", None) and not getattr(chunk, "tool_call_chunks", None):
-                        import json
-                        payload = json.dumps(chunk.content)
-                        yield f"data: {payload}\n\n"
+                    if getattr(chunk, "type", "") in ("ai", "AIMessageChunk"):
+                        if chunk.content and not getattr(chunk, "tool_calls", None) and not getattr(chunk, "tool_call_chunks", None):
+                            cleaned_content = chunk.content.replace("}</function>", "").replace("</function>", "")
+                            if cleaned_content:
+                                import json
+                                payload = json.dumps(cleaned_content)
+                                yield f"data: {payload}\n\n"
 
                 elif mode == "updates":
                     # 1. Handle Status Updates (from any node that provides them)
