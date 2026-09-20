@@ -151,14 +151,16 @@ async def call_model_node(state: AgentState):
     if use_rag:
         active_tools.append(retrieve_docs)
 
-    # If the last message was a tool response, don't bind tools again to force a final answer and prevent loops
-    if state["messages"] and state["messages"][-1].type == "tool":
-        llm_with_tools_dynamic = llm_dynamic
+    # Always bind tools so LangChain parses tool calls correctly (prevents raw `<function=...>` leaks)
+    if active_tools:
+        llm_with_tools_dynamic = llm_dynamic.bind_tools(active_tools)
     else:
-        if active_tools:
-            llm_with_tools_dynamic = llm_dynamic.bind_tools(active_tools)
-        else:
-            llm_with_tools_dynamic = llm_dynamic
+        llm_with_tools_dynamic = llm_dynamic
+
+    # If the last message was a tool response, we add a strong instruction to prevent infinite tool loops
+    loop_prevention_prompt = ""
+    if state["messages"] and state["messages"][-1].type == "tool":
+        loop_prevention_prompt = "\n\nCRITICAL INSTRUCTION: You just received a tool result. You MUST now provide a final answer to the user based on the tool result. DO NOT call any more tools."
 
     # A. define the prompt template
     default_system = (
@@ -176,6 +178,8 @@ async def call_model_node(state: AgentState):
         final_system = f"{default_system}\n\nUSER CUSTOM INSTRUCTIONS & PERSONA:\n{sys_prompt.strip()}"
     else:
         final_system = default_system
+        
+    final_system += loop_prevention_prompt
 
     print(f"--- DEBUG: System Prompt: {final_system} ---")
 
