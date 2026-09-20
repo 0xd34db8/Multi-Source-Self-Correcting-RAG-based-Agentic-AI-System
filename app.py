@@ -314,8 +314,8 @@ async def lifespan(app: FastAPI):
 
 api = FastAPI(lifespan=lifespan)
 
-@api.get("/health")
-async def health_check():
+@api.get("/wakeup")
+async def wakeup_check():
     """Endpoint to wake up the backend on initial load"""
     return {"status": "ok", "message": "Backend is awake"}
 
@@ -495,27 +495,26 @@ async def chat_endpoint(
         yield "data: [STATUS] Answering...\n\n"  # endpoint should immediately send a ping to show it's alive
         try:
             active_app = graph_app_temp if is_temporary else graph_app
-            async for event in active_app.astream(
-                input_data, config=config, stream_mode="updates"
+            async for mode, data in active_app.astream(
+                input_data, config=config, stream_mode=["messages", "updates"]
             ):
-                # 1. Handle Status Updates (from any node that provides them)
-                # The 'event' dict will look like: {"retrieve": {"status": "...", "context": "..."}}
-            
-                for node_name, node_output in event.items():
-                    if isinstance(node_output, dict) and node_output.get("status"):
-                        yield f"data: [STATUS] {node_output['status']}\n\n"
+                if mode == "messages":
+                    chunk, metadata = data
+                    if chunk.content and not getattr(chunk, "tool_calls", None) and not getattr(chunk, "tool_call_chunks", None):
+                        import json
+                        payload = json.dumps(chunk.content)
+                        yield f"data: {payload}\n\n"
 
-                    # 2. Handle the Final AI Message (specifically from the llm node)
-                    if node_name == "llm" and isinstance(node_output, dict) and "messages" in node_output:
-                        # node_output["messages"] only contains the NEW messages from this node
-                        last_message = node_output["messages"][-1]
-
-                        if node_output.get("status") == "Response blocked by safety/fact-check guardrails.":
-                            yield "data: Response blocked by safety/fact-check guardrails.\n\n"
-                        elif not getattr(last_message, "tool_calls", None) and last_message.content.strip():
-                            import json
-                            payload = json.dumps(last_message.content)
-                            yield f"data: {payload}\n\n"
+                elif mode == "updates":
+                    # 1. Handle Status Updates (from any node that provides them)
+                    for node_name, node_output in data.items():
+                        if isinstance(node_output, dict):
+                            status_msg = node_output.get("status")
+                            
+                            if status_msg == "Response blocked by safety/fact-check guardrails.":
+                                yield "data: Response blocked by safety/fact-check guardrails.\n\n"
+                            elif status_msg and status_msg != "Answering...":
+                                yield f"data: [STATUS] {status_msg}\n\n"
         except Exception as e:
             import traceback
             tb_str = traceback.format_exc().replace('\n', ' | ')
