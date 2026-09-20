@@ -314,6 +314,10 @@ async def lifespan(app: FastAPI):
 
 api = FastAPI(lifespan=lifespan)
 
+@api.get("/health")
+async def health_check():
+    """Endpoint to wake up the backend on initial load"""
+    return {"status": "ok", "message": "Backend is awake"}
 
 # --- PIP FREEZE ---
 @api.get("/__freeze")
