@@ -151,10 +151,14 @@ async def call_model_node(state: AgentState):
     if use_rag:
         active_tools.append(retrieve_docs)
 
-    if active_tools:
-        llm_with_tools_dynamic = llm_dynamic.bind_tools(active_tools)
-    else:
+    # If the last message was a tool response, don't bind tools again to force a final answer and prevent loops
+    if state["messages"] and state["messages"][-1].type == "tool":
         llm_with_tools_dynamic = llm_dynamic
+    else:
+        if active_tools:
+            llm_with_tools_dynamic = llm_dynamic.bind_tools(active_tools)
+        else:
+            llm_with_tools_dynamic = llm_dynamic
 
     # A. define the prompt template
     default_system = (
